@@ -12,9 +12,9 @@ ARG PREFETCH=false
 # IMPORTANT: Ensure these versions are synchronized with 'artifacts.lock.yaml'
 # Refer to the docs/DEVELOPER_GUIDE.md, "Updating Static Dependency Versions" for details
 ARG ZAP_VERSION=2.17.0
-ARG FF_VERSION=140.8.0esr
+ARG FF_VERSION=140.11.0esr
 ARG K8S_VERSION=1.35.2
-ARG TRIVY_VERSION=0.69.3
+ARG TRIVY_VERSION=0.70.0
 
 ARG DEPS_DIR=/tmp/deps
 ARG ZAP_FILE=$DEPS_DIR/ZAP.tar.gz
@@ -39,6 +39,15 @@ RUN mkdir "${DEPS_DIR}" /tmp/node_modules && \
 ## ZAP
 RUN mkdir /opt/zap && \
   tar zxvf "$ZAP_FILE" --strip-components=1 -C /opt/zap
+
+## Install updated ZAP addons, replacing older bundled versions
+RUN for zap_file in "$DEPS_DIR"/*.zap; do \
+      [ -f "$zap_file" ] || continue; \
+      addon_name="${zap_file##*/}"; \
+      addon_name="${addon_name%-*-*.zap}"; \
+      rm -fv "/opt/zap/plugin/${addon_name}-"*.zap; \
+      cp -pv "$zap_file" /opt/zap/plugin/; \
+    done
 
 ## Firefox, for ZAP's SpiderAjax
 RUN mkdir -p /opt/firefox && \
@@ -88,6 +97,7 @@ COPY --from=deps /opt/zap /opt/zap
 COPY --from=deps /opt/firefox /opt/firefox
 COPY --from=deps /usr/local/bin/kubectl /usr/local/bin/kubectl
 COPY --from=deps /tmp/trivy/trivy /usr/local/bin/trivy
+COPY --from=deps /tmp/trivy/contrib /usr/local/share/trivy/templates
 COPY --from=deps /tmp/redocly/node_modules /opt/redocly/node_modules
 
 ENV PATH $PATH:/opt/zap/:/opt/rapidast/:/opt/firefox/
@@ -97,7 +107,6 @@ RUN mkdir /opt/rapidast && \
   echo "$COMMIT_SHA" > /opt/rapidast/commit_sha.txt
 
 COPY ./rapidast.py ./requirements-llm.txt /opt/rapidast/
-RUN sed -i '1s|#!/usr/bin/env python3|#!/usr/bin/python3.12|' /opt/rapidast/rapidast.py
 COPY ./scanners/ /opt/rapidast/scanners/
 COPY ./tools/ /opt/rapidast/tools/
 COPY ./exports/ /opt/rapidast/exports/
@@ -116,11 +125,23 @@ COPY ./containerize/path_rapidast.sh /etc/profile.d/rapidast.sh
 
 ### Install RapiDAST requirements, globally, so that it's available to any user
 RUN microdnf -y module enable nodejs:24 && \
-  microdnf install -y --setopt=install_weak_deps=0 --nodocs python3.12 java-21-openjdk shadow-utils dbus-glib procps git-core nodejs npm && \
-  microdnf install -y --nodocs gtk3 && \
+  microdnf install -y --setopt=install_weak_deps=0 --nodocs \
+      shadow-utils procps \
+      # RapiDAST
+      python3.12 \
+      # ZAP
+      java-21-openjdk \
+      # Firefox
+      gtk3 libX11-xcb \
+      # Redocly
+      nodejs npm \
+      # user convenience
+      git-core \
+      && \
   python3.12 -m ensurepip --upgrade && \
   python3.12 -m pip install --no-cache-dir -r /opt/rapidast/requirements-llm.txt && \
-  microdnf clean all -y && rm -rf /var/cache/dnf /tmp/*  && \
+  microdnf clean all -y && rm -rf /var/cache/dnf /tmp/* && \
+  ln -s /usr/bin/python3.12 /usr/local/bin/python3 && \
   ln -s /opt/redocly/node_modules/@redocly/cli/bin/cli.js /usr/local/bin/redocly
 
 RUN useradd -u 1000 -d /opt/rapidast -m -s /bin/bash rapidast && \
